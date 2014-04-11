@@ -1,4 +1,12 @@
-#!/bin/sh
+#!/bin/sh -e
 
-del build; python ./setup.py build && PYTHONPATH=.:build/lib.macosx-10.4-x86_64-2.7 python src/hello.py
+clear
+
+rm -fr build
+python ./setup.py build
+
+echo ----------------------------------------
+
+PYTHONPATH=.:build/lib.macosx-10.4-x86_64-2.7 python src/memcev.py
+
 
