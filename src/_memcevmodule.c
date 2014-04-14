@@ -18,8 +18,6 @@ static PyObject* _MemcevEventLoop_start(_MemcevEventLoop *self, PyObject *unused
 
     Py_BEGIN_ALLOW_THREADS;
 
-    printf("starting ev_run\n");
-
     /*
     normally you call ev_run and live in it forever, but he exits when he runs
     out of watchers, which we haven't set up yet (and the async_watcher doesn't
@@ -28,8 +26,6 @@ static PyObject* _MemcevEventLoop_start(_MemcevEventLoop *self, PyObject *unused
     */
 
     ev_run(self->loop,0);
-
-    printf("returning from ev_run\n");
 
     Py_END_ALLOW_THREADS;
 
@@ -107,7 +103,6 @@ static int get_and_handle_work(_MemcevEventLoop *self) {
         // it's the Empty exception first
         if(PyErr_ExceptionMatches(self->empty_exception)) {
             // then there's no problem, just move on
-            printf("I got some fake work\n");
             PyErr_Clear();
             return 0;
         } else {
@@ -124,21 +119,64 @@ static int get_and_handle_work(_MemcevEventLoop *self) {
     PyObject_Print(work_result, stdout, 0);
     printf("\n");
 
-    // otherwise work_result is a tuple describing the work to do
+    // otherwise hopefully work_result is a tuple describing the work to do
     if(!PyTuple_Check(work_result)
-        || PyTuple_GET_SIZE(work_result) < 1
+        || PyTuple_GET_SIZE(work_result) < 2
         || !PyString_Check(PyTuple_GET_ITEM(work_result, 0))) {
 
         // of course since nobody can catch our exception, the best we can do is
         // print it
-        PyErr_SetString(PyExc_TypeError, "_Memcev work items must be tuples");
+        PyErr_SetString(PyExc_TypeError, "_Memcev work items must be work tuples");
         PyErr_Print();
         goto cleanup;
     };
 
-
     PyObject* tag_object = PyTuple_GET_ITEM(work_result, 0);
     char* tag = PyString_AS_STRING(tag_object);
+
+    PyObject* response_q = PyTuple_GET_ITEM(work_result, 1);
+    int have_response_q = (response_q != Py_None);
+
+    if(0 == strcmp(tag, "check")) {
+        // a message that just checks that the response system is working
+        if(have_response_q) {
+            PyObject* none_result = PyObject_CallMethod(response_q, "put",
+                                                        "((s))", "checked");
+            Py_XDECREF(none_result);
+            // TODO check for none_result == NULL
+        } else {
+            // not sure what they were hoping to accomplish here 
+        }
+    } else if (0 == strcmp(tag, "get")) {
+        // TODO implement
+        PyObject* none_result = PyObject_CallMethod(response_q, "put",
+                                                    "((ss))", "getted", NULL);
+        Py_XDECREF(none_result);
+        // TODO check for none_result == NULL
+    } else if (0 == strcmp(tag, "set")) {
+        // TODO implement
+        PyObject* none_result = PyObject_CallMethod(response_q, "put",
+                                                    "((s))", "setted");
+        Py_XDECREF(none_result);
+        // TODO check for none_result == NULL
+    } else if (0 == strcmp(tag, "connect")) {
+        // TODO implement
+        PyObject* none_result = PyObject_CallMethod(response_q, "put",
+                                                    "((s))", "connected");
+        Py_XDECREF(none_result);
+        // TODO check for none_result == NULL
+    } else if (0 == strcmp(tag, "stop")) {
+        // TODO implement
+        PyObject* none_result = PyObject_CallMethod(response_q, "put",
+                                                    "((s))", "stopped");
+        // TODO need to tell everyone listening on a queue that they won't get
+        // their response
+        ev_break(self->loop, EVBREAK_ALL);
+        Py_XDECREF(none_result);
+        // TODO check for none_result == NULL
+    } else {
+        // TODO throw exception, set something in the response queue if it exists?
+    }
 
 cleanup:
 
@@ -221,13 +259,14 @@ static void _MemcevEventLoop_dealloc(_MemcevEventLoop* self) {
 
     Py_XDECREF(self->requests);
     Py_XDECREF(self->empty_exception);
-    self->ob_type->tp_free((PyObject*)self);
 
     if(self->loop != NULL) {
         ev_loop_destroy(self->loop);
     }
     /* the async_watcher has no cleanup method, so I think it's safe to assume
        that it has no state after it's not used? */
+
+    self->ob_type->tp_free((PyObject*)self);
 }
 
 

@@ -10,7 +10,9 @@ class Client(object):
         self.port = port
         self.size = size
 
-        # all communication with the event loop is done via this queue
+        # all communication with the event loop is done via this queue by
+        # inserting work tuples. A work tuple consists in a string, a response
+        # Queue, and then any arguments to the command
         self.requests = Queue()
 
         self.eventloop = _memcev.EventLoop(host,
@@ -18,14 +20,20 @@ class Client(object):
                                            self.size,
                                            self.requests)
 
+        self.thread = threading.Thread(name="_memcev.EventLoop",
+                                       target=self.eventloop.start)
+        self.thread.start()
+
+        # make sure that he started successfully
+        check_queue = Queue()
+        self.send_request('check', check_queue)
+        self.check_response(check_queue, ["checked"], timeout=10)
+
         # connections will be built and connected by the eventloop thread, so
         # make sure that the first thing that he does when he comes up is
         # connect to them
         for x in range(self.size):
             self.connect(host, port)
-
-        self.thread = threading.Thread(target=self.eventloop.start)
-        self.thread.start()
 
     def __repr__(self):
         return "%s(%r, %r)" % (self.__class__.__name__,
@@ -33,23 +41,34 @@ class Client(object):
                                self.port)
 
     def __del__(self):
-        self.stop()
+        self.stop(wait=True)
+
+    def send_request(self, *a):
+        # make sure they're valid work tuples. We'd much rather bail here than
+        # in the thread where the eventloop can't response
+        assert len(a) >= 2
+        assert isinstance(a[0], str)
+        assert a[1] is None or isinstance(a[1], Queue)
+
+        self.requests.put(a)
+        self.eventloop.notify()
 
     def connect(self, host, port):
         q = Queue()
-        self.requests.append(("connect", self.host, self.port, q))
-        self.check_response(q, ('connected',))
+        self.send_request("connect", q, self.host, self.port)
+        self.check_response(q, ['connected'])
 
-    def stop(self):
+    def stop(self, wait=True):
         """
-        Instructs the eventloop to stop, but doesn't stop it immediately or
-        block for it to finish
+        Instructs the eventloop to stop
         """
-        self.requests.put(('stop',))
+        self.send_request('stop', None)
+        if wait:
+            return self.thread.join()
 
     @staticmethod
-    def check_response(q, expected_tags):
-        response = q.get()
+    def check_response(q, expected_tags, timeout=None):
+        response = q.get(timeout=timeout)
         tag = response[0]
 
         if tag == 'error':
@@ -62,8 +81,7 @@ class Client(object):
 
     def set(self, key, value, wait=True):
         q = Queue() if wait else None
-        self.requests.put(('set', key, value, q))
-        self.eventloop.notify()
+        self.send_request('set', q, key, value)
 
         if not wait:
             return
@@ -73,29 +91,26 @@ class Client(object):
 
     def get(self, key):
         q = Queue()
-        self.requests.put(('get', key, q))
-        self.eventloop.notify()
+        self.send_request('get', q, key)
 
         tag, value = self.check_response(q, ['getted'])
 
         return value
 
-    def join(self):
-        self.requests.join()
-        return self.thread.join()
-
 def test(host='localhost', port=11211):
     print 'clientfor %s:%d' % (host, port)
     client = Client(host, port)
-    print 'client', client
-    print 'eventloop', client.eventloop
 
     print 'setting'
-    print client.set('foo', 'bar')
+    setted = client.set('foo', 'bar')
+    print 'setted', setted
     print 'getting'
-    print client.get('foo')
+    gotted = client.get('foo')
+    print 'gotted', gotted
 
-    client.join()
+    print 'stopping'
+    client.stop(wait=True)
+
     # print 'eventloop.requests', client.eventloop.requests
     # print 'eventloop.connections', client.eventloop.connections
 
