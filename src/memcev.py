@@ -10,19 +10,22 @@ class Client(object):
         self.port = port
         self.size = size
 
+        # all communication with the event loop is done via this queue
         self.requests = Queue()
-
-        # we're going to track with servers slots are used in Python, so this is
-        # a Queue of integers that are just slot pointers
-        self.connections = Queue(maxsize=size)
-        for x in range(size):
-            self.connections.put(x)
 
         self.eventloop = _memcev.EventLoop(host,
                                            port,
                                            self.size,
                                            self.requests)
-        threading.Thread(target=self.eventloop.start).run()
+
+        # connections will be built and connected by the eventloop thread, so
+        # make sure that the first thing that he does when he comes up is
+        # connect to them
+        for x in range(self.size):
+            self.connect(host, port)
+
+        self.thread = threading.Thread(target=self.eventloop.start)
+        self.thread.start()
 
     def __repr__(self):
         return "%s(%r, %r)" % (self.__class__.__name__,
@@ -30,20 +33,23 @@ class Client(object):
                                self.port)
 
     def __del__(self):
-        # TODO
+        self.stop()
+
+    def connect(self, host, port):
+        q = Queue()
+        self.requests.append(("connect", self.host, self.port, q))
+        self.check_response(q, ('connected',))
+
+    def stop(self):
+        """
+        Instructs the eventloop to stop, but doesn't stop it immediately or
+        block for it to finish
+        """
         self.requests.put(('stop',))
 
-    @contextlib.contextmanager
-    def get_connection(self):
-        connection_number = self.connections.get()
-        yield connection_number
-        self.connections.task_done()
-
-        # put it back
-        self.connections.put(connection_number)
-
     @staticmethod
-    def get_response(response, expected_tags):
+    def check_response(q, expected_tags):
+        response = q.get()
         tag = response[0]
 
         if tag == 'error':
@@ -51,6 +57,8 @@ class Client(object):
 
         elif tag not in expected_tags:
             raise Exception('Unknown tag %s on %r' % (tag, response))
+
+        return response
 
     def set(self, key, value, wait=True):
         q = Queue() if wait else None
@@ -61,22 +69,33 @@ class Client(object):
             return
 
         # just wait and validate the response
-        self.get_response(q.get(), ['setted'])
+        self.check_response(q, ['setted'])
 
     def get(self, key):
         q = Queue()
         self.requests.put(('get', key, q))
         self.eventloop.notify()
 
-        tag, value = self.get_response(q.get(), ['getted'])
+        tag, value = self.check_response(q, ['getted'])
 
         return value
+
+    def join(self):
+        self.requests.join()
+        return self.thread.join()
 
 def test(host='localhost', port=11211):
     print 'clientfor %s:%d' % (host, port)
     client = Client(host, port)
     print 'client', client
     print 'eventloop', client.eventloop
+
+    print 'setting'
+    print client.set('foo', 'bar')
+    print 'getting'
+    print client.get('foo')
+
+    client.join()
     # print 'eventloop.requests', client.eventloop.requests
     # print 'eventloop.connections', client.eventloop.connections
 

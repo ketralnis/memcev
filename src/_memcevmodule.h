@@ -4,12 +4,19 @@
 #include <Python.h>
 #include <structmember.h>
 
+#ifndef EV_MULTIPLICITY
+#error "We require EV_MULTIPLICITY to run"
+#endif
+
 /* prototypes */
 
 typedef struct {
     PyObject_HEAD
     /* our own C-visible fields go here. */
     PyObject* requests; /* the queue of tuples of inbound requests */
+    ev_async async_watcher;
+    struct ev_loop *loop;
+    PyObject* empty_exception;
 } _MemcevEventLoop;
 
 PyMODINIT_FUNC init_memcev(void);
@@ -17,6 +24,9 @@ static PyObject * _MemcevEventLoop_notify(_MemcevEventLoop *self, PyObject *unus
 static PyObject * _MemcevEventLoop_start(_MemcevEventLoop *self, PyObject *unused);
 static int _MemcevEventLoop_init(_MemcevEventLoop *self, PyObject *args, PyObject *kwds);
 static void _MemcevEventLoop_dealloc(_MemcevEventLoop* self);
+
+static void notify_event_loop(struct ev_loop *loop, ev_async *watcher, int revents);
+static int get_and_handle_work(_MemcevEventLoop *self);
 
 /* the method table */
 static PyMethodDef _MemcevEventLoopType_methods[] = {
