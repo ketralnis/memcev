@@ -1,4 +1,5 @@
 from Queue import Queue, Empty
+from collections import deque
 import threading
 import re
 
@@ -18,11 +19,11 @@ class Client(_memcev._MemcevClient):
         # all communication with the event loop is done via this queue by
         # inserting work tuples. A work tuple consists in a string, a response
         # Queue, and then any arguments to the command
-        self.requests = Queue()
+        self.requests = deque()
 
         # we'll encase our connections in a queue to easily use it as a
         # list/semaphore at the same time
-        self.connections = Queue(self.size)
+        self.connections = Queue()
 
         self.thread = threading.Thread(name="_memcev._MemcevClient.start",
                                        target=self.start)
@@ -37,7 +38,11 @@ class Client(_memcev._MemcevClient):
         # make sure that the first thing that he does when he comes up is
         # connect to them
         for x in range(self.size):
-            self.connect(host, port)
+            q = Queue()
+            self.send_request("connect", q)
+            tag, = self.check_response(q, ['connected'])
+
+        self.d = {}
 
     def __repr__(self):
         return "%s(%r, %r)" % (self.__class__.__name__,
@@ -55,39 +60,90 @@ class Client(_memcev._MemcevClient):
         # items, or none
         while True:
             try:
-                work = self.requests.get_nowait()
-            except Empty:
+                work = self.requests.popleft()
+            except IndexError:
                 # no work to do, exit and move on
                 return
 
-            print 'got work item', work
+            print 'got work item', id(work), work, self.requests
 
             tag = work[0]
             queue = work[1]
+            args = work[2:]
 
             if tag == 'check':
                 if queue:
                     queue.put(('checked',))
+
+                continue
+
             elif tag == 'connect':
+                assert not args
+
+                if not hasattr(self, 'num_connections'):
+                    self.num_connections = 0
+                self.num_connections += 1
+
+                self.connections.put('connection%d' % self.num_connections)
+
                 if queue:
                     queue.put(('connected',))
-            elif tag == 'get':
-                if queue:
-                    queue.put(('getted', 'fakevalue'))
-            elif tag == 'set':
-                if queue:
-                    queue.put(('setted',))
-            elif tag == 'stop':
 
+                continue
+
+            elif tag == 'stop':
                 self.stop()
 
                 if queue:
                     queue.put(('stopped',))
 
-            else:
+                continue
+
+            elif tag not in ('get', 'set'):
                 raise Exception("Unknown tag %r" % (tag,))
 
-            self.requests.task_done()
+            # those are the only commands that can be done without a connection,
+            # so next step is to get one
+
+            try:
+                connection = self.connections.get_nowait()
+            except Empty:
+                # no connections available, just put the work tuple back where
+                # we found it. when the next person finishes, we'll get called
+                # again
+
+                # n.b. there is a subtle ordering issue here with request
+                # scheduling that can happen if we are pre-empted. We popped
+                # from the left of the deque, and if we didn't find any
+                # connections to use we pushed it back on the left where we
+                # found it, right? But if we've been pre-empted by another
+                # thread who called popleft in the mean time, it's possible that
+                # we aren't doing the work in exactly the order that we received
+                # it. This is a small enough issue and we're trying not to block
+                # here it's not really worth solving but it could be solved by
+                # wrapping the get-check- return operation in a mutex if it
+                # leads to starvation or something in practise.
+                self.requests.appendleft(work)
+                return
+
+            print 'got connection', connection
+
+            try:
+
+                if tag == 'get':
+                    key, = args
+                    if queue:
+                        queue.put(('getted', self.d.get(key)))
+
+                elif tag == 'set':
+                    key, value = args
+                    self.d[key] = value
+                    if queue:
+                        queue.put(('setted',))
+
+            finally:
+                # put it back when we're done
+                self.connections.put(connection)
 
 
     def send_request(self, *a):
@@ -97,17 +153,12 @@ class Client(_memcev._MemcevClient):
         assert isinstance(a[0], str)
         assert a[1] is None or isinstance(a[1], Queue)
 
-        self.requests.put(a)
+        self.requests.append(a)
         self.notify()
 
     @staticmethod
     def valid_key(key, valid_re = re.compile('^[a-zA-Z0-9]{,250}$')):
         return isinstance(key, str) and valid_re.match(key)
-
-    def connect(self, host, port):
-        q = Queue()
-        self.send_request("connect", q, self.host, self.port)
-        tag, = self.check_response(q, ['connected'])
 
     def close(self, wait=True):
         """
@@ -168,11 +219,8 @@ def test(host='localhost', port=11211):
     print 'getted', getted
 
     print 'stopping'
-    client.close(wait=True)
+    client.close()
     print 'closed'
-
-    # print 'eventloop.requests', client.eventloop.requests
-    # print 'eventloop.connections', client.eventloop.connections
 
 if __name__ == '__main__':
     test()

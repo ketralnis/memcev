@@ -31,17 +31,17 @@ static PyObject* _MemcevClient_stop(_MemcevClient *self, PyObject *unused) {
 
 
 static PyObject* _MemcevClient_notify(_MemcevClient *self, PyObject *unused) {
-    /*
-    This is the MemcevClient.notify() Python method to let the event loop know that
-    a new entry has been added on the self.requests queue. All we do is pass
-    this information onto the event loop, who will trigger notify_event_loop to
-    do the work in that thread.
-    */
+    // This is the MemcevClient.notify() Python method to let the event loop
+    // know that a new entry has been added on the self.requests queue. All we
+    // do is pass this information onto the event loop, who will trigger
+    // notify_event_loop (through the async_watcher) to do the work in that
+    // thread.
 
     // the docs claim that this doesn't block, but since it's thread-safe there
     // is probably a mutex in there that I'd rather not block Python with if we
     // don't have to
     Py_BEGIN_ALLOW_THREADS;
+    // TODO do we have to check for an error here?
     ev_async_send(self->loop, &self->async_watcher);
     Py_END_ALLOW_THREADS;
 
