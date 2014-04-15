@@ -1,53 +1,46 @@
+#include <sys/socket.h>
+#include <fcntl.h>
+
 #include <Python.h>
 #include <ev.h>
 
 #include "_memcevmodule.h"
 
-static PyObject* _MemcevEventLoop_start(_MemcevEventLoop *self, PyObject *unused) {
+static PyObject* _MemcevClient_start(_MemcevClient *self, PyObject *unused) {
     /* this is the function called in its own Thread */
 
-    // we need to make sure that we can keep a handle on the outer object. n.b.
-    // that this makes a circular reference, so we have to make sure to clean
-    // ourself up
-    Py_INCREF(self);
-
-    /*
-    we don't need to hold the GIL while in the event loop, any anyone that wakes
-    us up will acquire it themselves
-    */
-
+    // we don't need to hold the GIL while waiting in the event loop
     Py_BEGIN_ALLOW_THREADS;
 
-    /*
-    normally you call ev_run and live in it forever, but he exits when he runs
-    out of watchers, which we haven't set up yet (and the async_watcher doesn't
-    count). fortunately there doesn't look  to be a performance cost to this
-    model
-    */
-
-    ev_run(self->loop,0);
+    ev_run(self->loop, 0);
 
     Py_END_ALLOW_THREADS;
 
-    /* to match the INCREF above */
-    Py_DECREF(self);
+    // all done! someone must have terminated us with ev_break
+    Py_RETURN_NONE;
+}
 
-    /* all done! */
+static PyObject* _MemcevClient_stop(_MemcevClient *self, PyObject *unused) {
+    // signal to the event loop that it should stop what it's doing. This will
+    // cause start() to return, leaving self.requests potentially full of work
+    // to do
+    ev_break(self->loop, EVBREAK_ALL);
+
     Py_RETURN_NONE;
 }
 
 
-static PyObject* _MemcevEventLoop_notify(_MemcevEventLoop *self, PyObject *unused) {
+static PyObject* _MemcevClient_notify(_MemcevClient *self, PyObject *unused) {
     /*
-    This is the EventLoop.notify() Python method to let the event loop know that
-    a new entry has been added on the self.requests queue. All he does is pass
+    This is the MemcevClient.notify() Python method to let the event loop know that
+    a new entry has been added on the self.requests queue. All we do is pass
     this information onto the event loop, who will trigger notify_event_loop to
-    do the work.
+    do the work in that thread.
     */
 
-    /* the docs claim that this doesn't block, but since it's thread-safe there
-       is probably a mutex in there that I'd rather not block Python with if we don't
-       have to */
+    // the docs claim that this doesn't block, but since it's thread-safe there
+    // is probably a mutex in there that I'd rather not block Python with if we
+    // don't have to
     Py_BEGIN_ALLOW_THREADS;
     ev_async_send(self->loop, &self->async_watcher);
     Py_END_ALLOW_THREADS;
@@ -55,180 +48,81 @@ static PyObject* _MemcevEventLoop_notify(_MemcevEventLoop *self, PyObject *unuse
     Py_RETURN_NONE;
 }
 
-// static int make_connection(char* host, int port) {
+// static ev_connection* make_connection(char* host, int port) {
+//     ev_connection* ret = malloc(sizeof(ev_connection));
+
+//     if(ret == NULL) {
+
+//         return NULL;
+//     }
+
 //     int sock = socket(PF_INET, SOCK_STREAM, 0);
 
 //     if(sock == -1) {
 //         /* TODO error */
 //     }
 
+//     ret.fd = sock;
+//     ret.state = connecting;
+
 //     /* set it non-blocking */
 //     if(-1 == fcntl(sock, F_SETFL, O_NONBLOCK | fcntl(sock, F_GETFL))) {
 //         /* TODO error */
 //     }
 
-//     return sock;
+//     // if (-1 == connect(sock, (struct sockaddr *)&daemon, len)) {
+//     //     // TODO error
+
+//     // }
+
+//     return ret;
 // }
 
 static void notify_event_loop(struct ev_loop *loop, ev_async *watcher, int revents) {
     /*
-    called by EventLoop.notify() to let us know that a new request has been
+    called by MemcevClient.notify() to let us know that a new request has been
     added to the self.requests queue
     */
 
     // we're not called while holding the GIL, so we have to grab it to get
-    // access to self->requests
+    // access to Python methods
     PyGILState_STATE gstate;
     gstate = PyGILState_Ensure();
 
-    _MemcevEventLoop *self = (_MemcevEventLoop*)ev_userdata(loop);
+    _MemcevClient *self = (_MemcevClient*)ev_userdata(loop);
 
-    while(get_and_handle_work(self)) {
-        // keep doing this as long as we think there might be more work to do
+    PyObject* result = PyObject_CallMethod((PyObject*)self, "handle_work", NULL);
+
+    if(result == NULL) {
+        // if an exception occurred, there's not really much we can do since
+        // we're in our own thread and there's nobody to raise it to. So
+        // hopefully handle_work() handles all of the errors that aren't
+        // programming errors
+        PyErr_Print();
     }
 
-    // don't need the GIL anymore
+    Py_XDECREF(result);
+
+    // don't need the GIL anymore after we've handled all of the work
     PyGILState_Release(gstate);
 }
 
-static int get_and_handle_work(_MemcevEventLoop *self) {
-    // called in the event loop thread. we don't know that there is work to do
-    // yet
-
-    PyObject* work_result = PyObject_CallMethod(self->requests, "get_nowait", NULL);
-
-    if(work_result == NULL) {
-        // we failed to pull work out of the queue. this might be just fine if
-        // it's because two async events were coallesed, so we need to see if
-        // it's the Empty exception first
-        if(PyErr_ExceptionMatches(self->empty_exception)) {
-            // then there's no problem, just move on
-            PyErr_Clear();
-            return 0;
-        } else {
-            // what the heck do we do here? there's nobody around to respond to
-            // it. all we did was check to see if it's empty, so I guess we can
-            // just print that and move on, but it's unlikely to work next time
-            // either
-            PyErr_Print();
-            goto cleanup;
-        }
-    }
-
-    printf("Got work item: ");
-    PyObject_Print(work_result, stdout, 0);
-    printf("\n");
-
-    // otherwise hopefully work_result is a tuple describing the work to do
-    if(!PyTuple_Check(work_result)
-        || PyTuple_GET_SIZE(work_result) < 2
-        || !PyString_Check(PyTuple_GET_ITEM(work_result, 0))) {
-
-        // of course since nobody can catch our exception, the best we can do is
-        // print it
-        PyErr_SetString(PyExc_TypeError, "_Memcev work items must be work tuples");
-        PyErr_Print();
-        goto cleanup;
-    };
-
-    PyObject* tag_object = PyTuple_GET_ITEM(work_result, 0);
-    char* tag = PyString_AS_STRING(tag_object);
-
-    PyObject* response_q = PyTuple_GET_ITEM(work_result, 1);
-    int have_response_q = (response_q != Py_None);
-
-    if(0 == strcmp(tag, "check")) {
-        // a message that just checks that the response system is working
-        if(have_response_q) {
-            PyObject* none_result = PyObject_CallMethod(response_q, "put",
-                                                        "((s))", "checked");
-            Py_XDECREF(none_result);
-            // TODO check for none_result == NULL
-        } else {
-            // not sure what they were hoping to accomplish here 
-        }
-    } else if (0 == strcmp(tag, "get")) {
-        // TODO implement
-        PyObject* none_result = PyObject_CallMethod(response_q, "put",
-                                                    "((ss))", "getted", NULL);
-        Py_XDECREF(none_result);
-        // TODO check for none_result == NULL
-    } else if (0 == strcmp(tag, "set")) {
-        // TODO implement
-        PyObject* none_result = PyObject_CallMethod(response_q, "put",
-                                                    "((s))", "setted");
-        Py_XDECREF(none_result);
-        // TODO check for none_result == NULL
-    } else if (0 == strcmp(tag, "connect")) {
-        // TODO implement
-        PyObject* none_result = PyObject_CallMethod(response_q, "put",
-                                                    "((s))", "connected");
-        Py_XDECREF(none_result);
-        // TODO check for none_result == NULL
-    } else if (0 == strcmp(tag, "stop")) {
-        // TODO implement
-        PyObject* none_result = PyObject_CallMethod(response_q, "put",
-                                                    "((s))", "stopped");
-        // TODO need to tell everyone listening on a queue that they won't get
-        // their response
-        ev_break(self->loop, EVBREAK_ALL);
-        Py_XDECREF(none_result);
-        // TODO check for none_result == NULL
-    } else {
-        // TODO throw exception, set something in the response queue if it exists?
-    }
-
-cleanup:
-
-    Py_XDECREF(work_result);
-
-    return 1;
-}
-
-static int _MemcevEventLoop_init(_MemcevEventLoop *self, PyObject *args, PyObject *kwargs) {
-    unsigned int size;
-    char* host;
-    int port;
-    PyObject* queue_module = NULL;
-
+static int _MemcevClient_init(_MemcevClient *self, PyObject *args, PyObject *kwargs) {
     int ret = 0;
 
-    static char *kwdlist[] = {"host", "port", "size", "requests", NULL};
+    static char *kwdlist[] = {NULL};
 
     if (!PyArg_ParseTupleAndKeywords(args, kwargs,
-                                     "siiO",
-                                     kwdlist,
-                                     &host,
-                                     &port,
-                                     &size,
-                                     &self->requests
-                                     )) {
+                                     "",
+                                     kwdlist)) {
+        // we take no arguments
         return -1;
     }
 
-    Py_INCREF(self->requests);
-
-    queue_module = PyImport_ImportModule("Queue");
-    if(queue_module == NULL) {
-        ret = -1;
-        goto cleanup;
-    }
-
-    // we need a handle on this because we need to compare against it in
-    // notify(). Since that is called in its own thread, I'd rather know if we
-    // can't import it before that or nobody will be around to catch the
-    // ImportError
-    self->empty_exception = PyObject_GetAttrString(queue_module, "Empty");
-    if(self->empty_exception == NULL) {
-        ret = -1;
-        goto cleanup;
-    }
-
-    /*
-    we have to initialise this here instead of letting the eventloop thread do
-    it, because we need a handle to it and to be able to promise that it can be
-    called before we can promise that the event loop has initialised it
-    */
+    // we have to initialise this here instead of letting the eventloop thread
+    // do it, because we need a handle to it and to be able to promise that it
+    // can be called before we can promise that the event loop has initialised
+    // it
     self->loop = ev_loop_new(EVFLAG_AUTO);
 
     if(!self->loop) {
@@ -237,7 +131,7 @@ static int _MemcevEventLoop_init(_MemcevEventLoop *self, PyObject *args, PyObjec
         goto cleanup;
     }
 
-    /* TODO catch errors here and pass them up */
+    /* TODO catch errors here and pass them up as well */
     ev_async_init(&self->async_watcher, notify_event_loop);
     ev_async_start(self->loop, &self->async_watcher);
 
@@ -246,19 +140,19 @@ static int _MemcevEventLoop_init(_MemcevEventLoop *self, PyObject *args, PyObjec
 
 cleanup:
 
-    Py_XDECREF(queue_module);
-
     return ret;
 }
 
-static void _MemcevEventLoop_dealloc(_MemcevEventLoop* self) {
+static void _MemcevClient_dealloc(_MemcevClient* self) {
     /*
     this isn't called until the event loop finishes running, so it should be
     safe to clean up everything including the libev objects
     */
 
+    Py_XDECREF(self->host);
+    Py_XDECREF(self->connections);
     Py_XDECREF(self->requests);
-    Py_XDECREF(self->empty_exception);
+    Py_XDECREF(self->thread);
 
     if(self->loop != NULL) {
         ev_loop_destroy(self->loop);
@@ -279,9 +173,9 @@ PyMODINIT_FUNC init_memcev(void) {
 
     /* have to do this here because some C compilers have issues with static
        references between modules. we can take this out when we make our own */
-    _MemcevEventLoopType.tp_new = PyType_GenericNew;
+    _MemcevClientType.tp_new = PyType_GenericNew;
 
-    if (PyType_Ready(&_MemcevEventLoopType) < 0) {
+    if (PyType_Ready(&_MemcevClientType) < 0) {
         /* exception raised in preparing */
         return;
     }
@@ -296,6 +190,6 @@ PyMODINIT_FUNC init_memcev(void) {
     }
 
     /* make it visible */
-    Py_INCREF(&_MemcevEventLoopType);
-    PyModule_AddObject(module, "EventLoop", (PyObject *)&_MemcevEventLoopType);
+    Py_INCREF(&_MemcevClientType);
+    PyModule_AddObject(module, "_MemcevClient", (PyObject *)&_MemcevClientType);
 }
