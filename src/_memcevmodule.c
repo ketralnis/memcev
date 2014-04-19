@@ -1,5 +1,7 @@
 #include <sys/socket.h>
 #include <fcntl.h>
+#include <string.h>
+#include <netdb.h>
 
 #include <Python.h>
 #include <ev.h>
@@ -29,8 +31,7 @@ static PyObject* _MemcevClient_stop(_MemcevClient *self, PyObject *unused) {
     Py_RETURN_NONE;
 }
 
-
-static PyObject* _MemcevClient_notify(_MemcevClient *self, PyObject *unused) {
+static PyObject* _MemcevClient_notify(_MemcevClient *self, PyObject *cb) {
     // This is the MemcevClient.notify() Python method to let the event loop
     // know that a new entry has been added on the self.requests queue. All we
     // do is pass this information onto the event loop, who will trigger
@@ -48,35 +49,248 @@ static PyObject* _MemcevClient_notify(_MemcevClient *self, PyObject *unused) {
     Py_RETURN_NONE;
 }
 
-// static ev_connection* make_connection(char* host, int port) {
-//     ev_connection* ret = malloc(sizeof(ev_connection));
+static void free_connection_capsule(PyObject *capsule) {
+    ev_connection* connection = PyCapsule_GetPointer(capsule, NULL);
+    if(connection == NULL) {
+        return;
+    }
 
-//     if(ret == NULL) {
+    // TODO lots of stuff to do here; remove any watchers? close connection? Is
+    // it safe to close?
 
-//         return NULL;
-//     }
+    free(connection);
+}
 
-//     int sock = socket(PF_INET, SOCK_STREAM, 0);
+static void connect_cb(struct ev_loop* loop, ev_io *w, int revents) {
+    if(!(EV_WRITE & revents)) {
+        return;
+    }
 
-//     if(sock == -1) {
-//         /* TODO error */
-//     }
+    // clean all of this up first and extract just the connection and callback
+    ev_io_stop(loop, w);
+    connect_request* request = w->data;
+    ev_connection* connection = request->connection;
+    PyObject* callback = request->callback;
+    free(request);
+    free(w);
 
-//     ret.fd = sock;
-//     ret.state = connecting;
+    int so_error;
+    socklen_t len = sizeof so_error;
+    int sockopt_result = getsockopt(connection->fd, SOL_SOCKET,
+                                    SO_ERROR, &so_error, &len);
 
-//     /* set it non-blocking */
-//     if(-1 == fcntl(sock, F_SETFL, O_NONBLOCK | fcntl(sock, F_GETFL))) {
-//         /* TODO error */
-//     }
+    if(sockopt_result != -1 && so_error == 0) {
+        // success!
+        connection->state = connected;
+    } else {
+        connection->state = error;
+        close(connection->fd);
+        if(sockopt_result == -1) {
+            connection->error = strerror(errno);
+        } else {
+            connection->error = strerror(so_error);
+        }
+    }
 
-//     // if (-1 == connect(sock, (struct sockaddr *)&daemon, len)) {
-//     //     // TODO error
+    // now grab the GIL so we can tell the client all about it
+    PyGILState_STATE gstate;
+    gstate = PyGILState_Ensure();
 
-//     // }
+    // call the callback with either an error tuple or a success tuple
+    // containing PyCapsule containing a connection*
 
-//     return ret;
-// }
+    PyObject* status_tuple = NULL;
+    PyObject* none_result = NULL;
+    PyObject* capsule = NULL;
+
+    if(connection->state == error) {
+        status_tuple = Py_BuildValue("((ss))", "error", connection->error);
+        free(connection);
+        if(status_tuple == NULL) {
+            goto sock_cleanup;
+        }
+    } else {
+        capsule = PyCapsule_New(connection, NULL, free_connection_capsule);
+        if(capsule == NULL) {
+            goto sock_cleanup;
+        }
+
+        status_tuple = Py_BuildValue("((ss))", "connected", capsule);
+        if(status_tuple == NULL) {
+            goto sock_cleanup;
+        }
+    }
+
+    none_result = PyObject_CallObject(callback, status_tuple);
+    if(none_result == NULL) {
+        // if he didn't exit successfully, we don't really know if he did his
+        // job to add the capsule to the connections queue, so we don't know
+        // whether we should close the socket. since we're this far, we know
+        // that the object has been created successfully so we'll rely on
+        // refcounting to close it now
+    }
+
+    goto cleanup;
+
+sock_cleanup:
+    // an error occurred that means we need to clean up the socket first
+    close(connection->fd);
+    free(connection);
+
+cleanup:
+    Py_DECREF(ev_userdata(loop));
+    Py_DECREF(callback);
+    Py_XDECREF(status_tuple);
+    Py_XDECREF(capsule);
+    Py_XDECREF(none_result);
+
+    if(PyErr_Occurred()) {
+        // not much else I can do here, we're on the event loop's thread
+        PyErr_Print();
+    }
+
+    PyGILState_Release(gstate);
+}
+
+static PyObject* _MemcevClient__connect(_MemcevClient *self, PyObject *cb) {
+    PyObject* ret = NULL;
+
+    Py_INCREF(cb);
+
+    ev_connection* connection = NULL;
+
+    ev_io* connect_watcher = NULL;
+    connect_request* request = NULL;
+
+    char* hostname = PyString_AsString((PyObject*)self->host);
+
+    if(hostname == NULL) {
+        // somebody messed with my hostname
+        return NULL;
+    };
+
+    connect_watcher = malloc(sizeof(ev_io));
+    if(connect_watcher == NULL) {
+        ret = PyErr_NoMemory();
+        goto error_lbl;
+    }
+
+    request = malloc(sizeof(connect_request));
+    if(request == NULL) {
+        ret = PyErr_NoMemory();
+        goto error_lbl;
+    }
+
+    // he's going to do a blocking network call to resolve DNS
+    Py_BEGIN_ALLOW_THREADS;
+
+    connection = make_connection(hostname, self->port);
+
+    Py_END_ALLOW_THREADS;
+
+    if(connection == NULL) {
+        ret = PyErr_NoMemory();
+        goto error_lbl;
+    }
+
+    if(connection->state == error) {
+        // since we're connecting in a non-blocking way, these errors can only
+        // be errors in DNS resolution or allocation failures. we don't find out
+        // about any others until later
+        PyErr_SetString(PyExc_RuntimeError, connection->error);
+        goto error_lbl;
+    }
+
+    connect_watcher->data = request;
+    request->connection = connection;
+    request->callback = cb;
+
+    // that request now has a reference to us
+    Py_INCREF(self);
+
+    ev_io_init(connect_watcher, connect_cb, connection->fd, EV_WRITE);
+    ev_io_start(self->loop, connect_watcher);
+
+    Py_RETURN_NONE;
+
+error_lbl:
+    if(connection != NULL) {
+        free(connection);
+    }
+    if(connect_watcher != NULL) {
+        free(connect_watcher);
+    }
+    if(request != NULL) {
+        free(request);
+    }
+    Py_DECREF(cb);
+
+    return ret;
+}
+
+static ev_connection* make_connection(char* host, int port) {
+    ev_connection* ret = malloc(sizeof(ev_connection));
+
+    if(ret == NULL) {
+        return NULL;
+    }
+
+    int sock = socket(PF_INET, SOCK_STREAM, 0);
+
+    if(sock == -1) {
+        ret->state = error;
+        ret->error = strerror(errno);
+
+        goto cleanup;
+    }
+
+    ret->fd = sock;
+    ret->state = connecting;
+
+    /* set it non-blocking */
+    if(-1 == fcntl(sock, F_SETFL, O_NONBLOCK | fcntl(sock, F_GETFL))) {
+        ret->state = error;
+        ret->error = strerror(errno);
+
+        goto cleanup;
+    }
+
+    // libev doesn't have an async DNS implementation like libevent, and I don't
+    // really want to pull in libadns as a dependency. but we won't be doing
+    // this very often anyway
+    struct hostent* he = gethostbyname(host);
+    if(he == NULL) {
+        ret->state = error;
+        ret->error = (char*)hstrerror(h_errno);
+        goto cleanup;
+    }
+
+    struct sockaddr_in server;
+    server.sin_family = AF_INET;
+    server.sin_port = htons(port); // I really wish the OS did the byte-swapping on the port
+
+    memcpy(&server.sin_addr, he->h_addr_list[0], he->h_length);
+
+    int connect_status = connect(sock, (struct sockaddr *)&server, sizeof(server));
+
+    if(connect_status == 0) {
+        ret->state = error;
+        ret->error = "unexpected success";
+    } else if(errno != EINPROGRESS) {
+        // anything else is wrong
+        ret->state = error;
+        ret->error = strerror(errno);
+    }
+
+cleanup:
+    if(ret->state == error && sock != -1) {
+        close(sock);
+    }
+
+    // hostents are cleaned up/reused by the system
+
+    return ret;
+}
 
 static void notify_event_loop(struct ev_loop *loop, ev_async *watcher, int revents) {
     /*

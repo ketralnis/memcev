@@ -8,16 +8,40 @@
 #error "We require EV_MULTIPLICITY to run"
 #endif
 
+#if PY_VERSION_HEX < 0x02070000
+#error "We require Python 2.7 to run"
+#endif
+
 /* prototypes */
 
 typedef enum {
-    connecting
+    not_started,
+    connecting,
+    error,
+    connected,
 } ev_state;
 
 typedef struct {
     int fd;
     ev_state state;
+    char* error;
 } ev_connection;
+
+typedef struct {
+    ev_connection* connection;
+    PyObject* callback;
+} connect_request;
+
+typedef struct {
+    char* buffer;
+    ev_connection* connection;
+    PyObject* callback;
+} get_request;
+
+typedef struct {
+    ev_connection* connection;
+    PyObject* callback;
+} set_request;
 
 typedef struct {
     PyObject_HEAD
@@ -28,7 +52,7 @@ typedef struct {
     int port;
     int size;
     PyObject* connections; // a Queue of PyCapsule of ev_connection
-    PyObject* requests; // a Queue of work tuples
+    PyObject* requests; // a deque of work tuples
     PyObject* thread;
 
     ev_async async_watcher;
@@ -39,11 +63,12 @@ PyMODINIT_FUNC init_memcev(void);
 static PyObject * _MemcevClient_notify(_MemcevClient *self, PyObject *unused);
 static PyObject * _MemcevClient_start(_MemcevClient *self, PyObject *unused);
 static PyObject * _MemcevClient_stop(_MemcevClient *self, PyObject *unused);
+static PyObject* _MemcevClient__connect(_MemcevClient *self, PyObject *unused);
 static int _MemcevClient_init(_MemcevClient *self, PyObject *args, PyObject *kwds);
 static void _MemcevClient_dealloc(_MemcevClient* self);
 
 static void notify_event_loop(struct ev_loop *loop, ev_async *watcher, int revents);
-// static ev_connection make_connection(char* host, int port);
+static ev_connection* make_connection(char* host, int port);
 
 /* the method table */
 static PyMethodDef _MemcevClientType_methods[] = {
@@ -63,6 +88,13 @@ static PyMethodDef _MemcevClientType_methods[] = {
         (PyCFunction)_MemcevClient_stop, METH_NOARGS,
         "stop the eventloop (forcefully)"
     },
+
+    {
+        "_connect",
+        (PyCFunction)_MemcevClient__connect, METH_O,
+        "make an new connection"
+    },
+
     {NULL, NULL, 0, NULL}
 };
 
