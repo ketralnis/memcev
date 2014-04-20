@@ -11,7 +11,7 @@ class Client(_memcev._MemcevClient):
     # 5 seconds is a long time
     timeout = 5000
 
-    def __init__(self, host, port, size=5):
+    def __init__(self, host, port, size=5, debug=True):
         _memcev._MemcevClient.__init__(self)
 
         assert isinstance(host, str)
@@ -34,6 +34,14 @@ class Client(_memcev._MemcevClient):
 
         self.thread = threading.Thread(name="_memcev._MemcevClient.start",
                                        target=self.start)
+
+        if debug:
+            # In general we should be able to kill this thread just due to the
+            # destructor being triggered, so this shouldn't be necessary. But in
+            # dev we write bugs all of the time, so don't let those hang the
+            # program while we are trying to fix this problems
+            self.thread.daemon = True
+
         self.thread.start()
 
         # make sure that he started successfully

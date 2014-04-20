@@ -50,13 +50,21 @@ static PyObject* _MemcevClient_notify(_MemcevClient *self, PyObject *cb) {
 }
 
 static void free_connection_capsule(PyObject *capsule) {
-    ev_connection* connection = PyCapsule_GetPointer(capsule, NULL);
+    ev_connection* connection = PyCapsule_GetPointer(capsule, "connection");
     if(connection == NULL) {
         return;
     }
 
-    // TODO lots of stuff to do here; remove any watchers? close connection? Is
-    // it safe to close?
+    // if the capsule has lost all references, there can be no more watchers or
+    // anything so this should be safe
+
+    // this may block because it may have to flush anything in the socket. in
+    // real life it shouldn't though
+    Py_BEGIN_ALLOW_THREADS;
+
+    close(ev_connection->fd);
+
+    Py_END_ALLOW_THREADS;
 
     free(connection);
 }
@@ -110,7 +118,7 @@ static void connect_cb(struct ev_loop* loop, ev_io *w, int revents) {
             goto sock_cleanup;
         }
     } else {
-        capsule = PyCapsule_New(connection, NULL, free_connection_capsule);
+        capsule = PyCapsule_New(connection, "connection", free_connection_capsule);
         if(capsule == NULL) {
             goto sock_cleanup;
         }
@@ -125,9 +133,9 @@ static void connect_cb(struct ev_loop* loop, ev_io *w, int revents) {
     if(none_result == NULL) {
         // if he didn't exit successfully, we don't really know if he did his
         // job to add the capsule to the connections queue, so we don't know
-        // whether we should close the socket. since we're this far, we know
-        // that the object has been created successfully so we'll rely on
-        // refcounting to close it now
+        // whether we should close the socket. but since we're this far, we know
+        // that the capsule has been created successfully so can rely on
+        // refcounting to close it from now on
     }
 
     goto cleanup;
