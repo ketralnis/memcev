@@ -81,8 +81,6 @@ static PyObject* _MemcevClient__set(_MemcevClient *self, PyObject *args);
 static int _MemcevClient_init(_MemcevClient *self, PyObject *args, PyObject *kwds);
 static PyObject* _MemcevClient_new(PyTypeObject *type, PyObject *args, PyObject *kwds);
 static void _MemcevClient_dealloc(_MemcevClient* self);
-static int _MemcevClient_traverse(_MemcevClient *self, visitproc visit, void *arg);
-static int _MemcevClient_clear(_MemcevClient *self);
 
 static void notify_event_loop(struct ev_loop *loop, ev_async *watcher, int revents);
 static ev_connection* make_connection(char* host, int port);
@@ -157,10 +155,10 @@ static PyTypeObject _MemcevClientType = {
     0,                         /* tp_getattro */
     0,                         /* tp_setattro */
     0,                         /* tp_as_buffer */
-    Py_TPFLAGS_DEFAULT|Py_TPFLAGS_BASETYPE|Py_TPFLAGS_HAVE_GC, /* tp_flags */
+    Py_TPFLAGS_DEFAULT|Py_TPFLAGS_BASETYPE, /* tp_flags */
     "A memcev client. Don't use me directly, use memcev.Client.", /* tp_doc */
-    (traverseproc)_MemcevClient_traverse, /* tp_traverse */
-    (inquiry)_MemcevClient_clear, /* tp_clear */
+    0,                         /* tp_traverse */
+    0,                         /* tp_clear */
     0,                         /* tp_richcompare */
     0,                         /* tp_weaklistoffset */
     0,                         /* tp_iter */

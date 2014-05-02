@@ -83,7 +83,7 @@ static void get_request_cb(struct ev_loop* loop, ev_io *watcher, int revents) {
     // protocol we'd also want to have a real parser but for memcached this is
     // fine
 
-    // REMMEBER that we need to be able to check for write *and* read
+    // REMEMBER that we need to be able to check for write *and* read
     // availability on the same loop because of event coallescing
 
     PyGILState_STATE gstate;
@@ -535,22 +535,11 @@ cleanup:
     return ret;
 }
 
-static int _MemcevClient_traverse(_MemcevClient *self, visitproc visit, void *arg) {
-    Py_VISIT(self->host);
-    return 0;
-
-}
-
-static int _MemcevClient_clear(_MemcevClient *self) {
-    Py_CLEAR(self->host);
-    return 0;
-}
-
 static void _MemcevClient_dealloc(_MemcevClient* self) {
     // this isn't called until the event loop finishes running, so it should be
     // safe to clean up everything including the libev objects
     printf("dealloc1\n");
-    _MemcevClient_clear(self);
+    Py_XDECREF(self->host);
     printf("dealloc2\n");
 
     if(self->loop != NULL) {
