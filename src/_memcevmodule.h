@@ -18,11 +18,6 @@ typedef struct {
     PyObject_HEAD
     /* our own C-visible fields go here. */
 
-    PyObject* host;
-
-    int port;
-    int size;
-
     ev_async async_watcher;
     struct ev_loop *loop;
 } _MemcevClient;
@@ -45,23 +40,16 @@ typedef struct {
     PyObject* callback;
 } connect_request;
 
-// just pick a nice round number for the initial buffer allocation size. if we
-// wanted to be super fancy we could track how big final allocations tend to
-// be per-connection, but if we're sending requests over a network, malloc()
-// will hardly be our bottleneck
-#define DEFAULT_GET_REQUEST_BUFFER 1024
-
 typedef enum {
     get_not_started, // we're waiting for the connection to become writeable
+    get_awaiting_response, // we sent the request and are waiting for the response
 } get_request_state;
 
 typedef struct {
-    char* buffer; // pointer to the char* buffer containing the response from the server so far
-    size_t buffer_size; // how much buffer we've allocated
-    size_t buffer_offset; // how far into the buffer we are, as distinct from its size
     PyObject* cb; // who to call with the result
     PyObject* key;
     PyObject* connection; // capsule containing the ev_connection
+    PyObject* acc; // somewhere for _parse_get_response to store its intermediate states
     get_request_state state;
 } get_request;
 
@@ -74,12 +62,11 @@ PyMODINIT_FUNC init_memcev(void);
 static PyObject* _MemcevClient_notify(_MemcevClient *self, PyObject *unused);
 static PyObject* _MemcevClient_start(_MemcevClient *self, PyObject *unused);
 static PyObject* _MemcevClient_stop(_MemcevClient *self, PyObject *unused);
-static PyObject* _MemcevClient__connect(_MemcevClient *self, PyObject *cb);
+static PyObject* _MemcevClient__connect(_MemcevClient *self, PyObject *args);
 static PyObject* _MemcevClient__get(_MemcevClient *self, PyObject *args);
 static PyObject* _MemcevClient__set(_MemcevClient *self, PyObject *args);
 
 static int _MemcevClient_init(_MemcevClient *self, PyObject *args, PyObject *kwds);
-static PyObject* _MemcevClient_new(PyTypeObject *type, PyObject *args, PyObject *kwds);
 static void _MemcevClient_dealloc(_MemcevClient* self);
 
 static void notify_event_loop(struct ev_loop *loop, ev_async *watcher, int revents);
@@ -106,7 +93,7 @@ static PyMethodDef _MemcevClientType_methods[] = {
 
     {
         "_connect",
-        (PyCFunction)_MemcevClient__connect, METH_O,
+        (PyCFunction)_MemcevClient__connect, METH_VARARGS,
         "make an new connection (internal C implementation)"
     },
 
@@ -127,9 +114,6 @@ static PyMethodDef _MemcevClientType_methods[] = {
 
 static PyMemberDef _MemcevClientType_members[] = {
     /* we handle them all internally for now */
-    {"host",        T_OBJECT_EX, offsetof(_MemcevClient, host),        0, "the host to connect to"},
-    {"port",        T_INT,       offsetof(_MemcevClient, port),        0, "the port to connect to"},
-    {"size",        T_INT,       offsetof(_MemcevClient, size),        0, "how many connections to maintain"},
     {NULL}
 };
 
@@ -173,7 +157,7 @@ static PyTypeObject _MemcevClientType = {
     0,                         /* tp_dictoffset */
     (initproc)_MemcevClient_init, /* tp_init */
     0,                         /* tp_alloc */
-    _MemcevClient_new,         /* tp_new */
+    0,                         /* tp_new, will set in init_memcev */
 };
 
 #endif /* __MEMCEV_H__ */

@@ -3,7 +3,6 @@ from collections import deque
 import threading
 import re
 from functools import partial
-import traceback
 
 import _memcev
 
@@ -14,10 +13,7 @@ class Client(_memcev._MemcevClient):
     def __init__(self, host, port, size=5, debug=True):
         _memcev._MemcevClient.__init__(self)
 
-        assert isinstance(host, str)
         self.host = host
-
-        # python will assert these types for us
         self.port = port
         self.size = size
 
@@ -33,11 +29,10 @@ class Client(_memcev._MemcevClient):
         self.connections = Queue()
 
         self.thread = threading.Thread(name="_memcev._MemcevClient.start",
-                                       target=self.start)
+                                       target=self._start)
+        self.thread.daemon = debug
 
         self.thread.start()
-
-        self.check()
 
         # connections will be built and connected by the eventloop thread, so
         # make sure that the first thing that he does when he comes up is
@@ -57,6 +52,9 @@ class Client(_memcev._MemcevClient):
                 self.close()
                 raise
 
+    def _start(self):
+        return self.start()
+
     def check(self):
         # make sure that he started successfully
         return self.simple_request('check', timeout=10, tags='checked')
@@ -67,17 +65,10 @@ class Client(_memcev._MemcevClient):
                                self.port)
 
     def __del__(self):
-        print 'del1'
         if self.requests:
-            print 'del2'
             print 'Warning: stopping %r with %d requests remaining' % (self, len(self.requests))
-        print 'del3'
         self.close()
         # super's dealloc is always called
-        print 'del4'
-
-        print 'del5'
-
 
     def handle_work(self):
         # somebody told our C client that there is work to be done in the
@@ -110,8 +101,7 @@ class Client(_memcev._MemcevClient):
                     raise
 
                 # let the empty queue exception get bubbled back into C
-                queue.put_nowait(('error', "%s(%s)" % (e.__class__.__name__,
-                                                       e.message)))
+                queue.put_nowait(('error', e))
 
     def _handle_work(self, tag, queue, args):
         # handle a single work item
@@ -129,7 +119,8 @@ class Client(_memcev._MemcevClient):
             assert not args
 
             # call out to C to start the process
-            self._connect(partial(self.notify_connected, queue))
+            self._connect(self.host, self.port,
+                          partial(self.notify_connected, queue))
 
             return
 
@@ -228,7 +219,11 @@ class Client(_memcev._MemcevClient):
             tag = response[0]
 
             if tag == 'error':
-                raise Exception(response[1])
+                # we can either get real exception objects or just strings
+                if isinstance(response[1], Exception):
+                    raise response[1]
+                else:
+                    raise Exception(response[1])
 
             if tags and tag not in tags:
                 raise Exception("Unexpected tag %r in %r" % (tag, response))
@@ -262,6 +257,7 @@ class Client(_memcev._MemcevClient):
 
         self.simple_request('stop', tags='stopped')
         self.thread.join()
+        del self.thread
         self._closed = True
 
     @staticmethod
@@ -291,7 +287,7 @@ class Client(_memcev._MemcevClient):
         "Get the given key from memcached and return it, or None if it's not present"
         assert self.valid_key(key)
 
-        tag, value = self.simple_request('get', key, tags='getted')
+        tag, key, value = self.simple_request('get', key, tags='getted')
 
         return value
 
@@ -310,13 +306,63 @@ class Client(_memcev._MemcevClient):
     def notify_getset(self, response_q, connection, result_tuple):
         # Callback function called on the event loop thread after a get or set
         # has been attempted
-        print 'notify_getset', self, response_q, connection, result_tuple
         if response_q:
             response_q.put(result_tuple)
 
         self.connections.put(connection)
 
         self.notify()
+
+    def _build_get_request(self, key):
+        assert self.valid_key(key)
+        request = 'get %s\r\n' % (key,)
+        return request
+
+    def _parse_get_response(self, key, acc, newdata):
+        # parse a response from a GET request. May be a partial response. return
+        # a tuple of one of:
+        #   (True, response)
+        #   (False, new accumulator)
+
+        # we're just doing regex matching here rather than any proper parsing.
+        # this works for our limited use case
+
+        # acc starts as None
+        acc = acc or ''
+        received_so_far = acc + newdata
+
+        if received_so_far == 'ERROR\r\n':
+            return True, ('error', 'Unknown error from server')
+
+        m = re.match('CLIENT_ERROR (.*)\r\n', received_so_far)
+        if m:
+            return True, ('error', "Client error: %s" % m.group(1))
+
+        m = re.match('SERVER_ERROR (.*)\r\n', received_so_far)
+        if m:
+            return True, ('error', "Server error: %s" % m.group(1))
+
+        # these will need to be changed if we support get_multi in the future
+
+        if received_so_far == 'END\r\n':
+            return True, ('getted', key, None)
+
+        m = re.match(r'VALUE ([^ ]+) ([^ ]+) ([0-9]+)\r\n(.*)\r\nEND\r\n', received_so_far)
+
+        if not m:
+            print repr(received_so_far)
+            return False, received_so_far
+
+        rkey = m.group(1)
+        #rflags = m.group(2)
+        byteslen = int(m.group(3))
+        payload = m.group(4)
+
+        if len(payload) != byteslen:
+            # we're not done, this is a coincidence
+            return False, received_so_far
+
+        return True, ('getted', rkey, payload)
 
 def test(host='localhost', port=11211):
     print 'clientfor %s:%d' % (host, port)
