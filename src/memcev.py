@@ -175,11 +175,13 @@ class Client(_memcev._MemcevClient):
         if tag == 'get':
             key, = args
 
-            return self._get(connection, key,
-                             partial(self.notify_getset, queue, connection))
+            return self._getset_request(connection,
+                                        self._build_get_request(key),
+                                        partial(self._parse_get_response, key), '',
+                                        partial(self.notify_getset, queue, connection))
 
         elif tag == 'set':
-            key, value = args
+            key, value, expire = args
 
             return self._set(connection, key, value,
                              partial(self.notify_getset, queue, connection))
@@ -325,7 +327,8 @@ class Client(_memcev._MemcevClient):
         #   (False, new accumulator)
 
         # we're just doing regex matching here rather than any proper parsing.
-        # this works for our limited use case
+        # this works for our limited use case but if we add get_multi or
+        # anything more complicated we'll have to revisit
 
         # acc starts as None
         acc = acc or ''

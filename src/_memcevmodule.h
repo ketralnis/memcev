@@ -41,29 +41,25 @@ typedef struct {
 } connect_request;
 
 typedef enum {
-    get_not_started, // we're waiting for the connection to become writeable
-    get_awaiting_response, // we sent the request and are waiting for the response
-} get_request_state;
+    getset_not_started, // we're waiting for the connection to become writeable
+    getset_awaiting_response, // we sent the request and are waiting for the response
+} getset_request_state;
 
 typedef struct {
-    PyObject* cb; // who to call with the result
-    PyObject* key;
     PyObject* connection; // capsule containing the ev_connection
-    PyObject* acc; // somewhere for _parse_get_response to store its intermediate states
-    get_request_state state;
-} get_request;
-
-typedef struct {
-    ev_connection* connection;
-    PyObject* callback;
-} set_request;
+    PyObject* body;
+    PyObject* parse_cb;
+    PyObject* acc; // somewhere for _parse_response to store its intermediate states
+    PyObject* done_cb; // who to call with the result    
+    getset_request_state state;
+} getset_request;
 
 PyMODINIT_FUNC init_memcev(void);
 static PyObject* _MemcevClient_notify(_MemcevClient *self, PyObject *unused);
 static PyObject* _MemcevClient_start(_MemcevClient *self, PyObject *unused);
 static PyObject* _MemcevClient_stop(_MemcevClient *self, PyObject *unused);
 static PyObject* _MemcevClient__connect(_MemcevClient *self, PyObject *args);
-static PyObject* _MemcevClient__get(_MemcevClient *self, PyObject *args);
+static PyObject* _MemcevClient__getset_request(_MemcevClient *self, PyObject *args);
 static PyObject* _MemcevClient__set(_MemcevClient *self, PyObject *args);
 
 static int _MemcevClient_init(_MemcevClient *self, PyObject *args, PyObject *kwds);
@@ -98,17 +94,10 @@ static PyMethodDef _MemcevClientType_methods[] = {
     },
 
     {
-        "_get",
-        (PyCFunction)_MemcevClient__get, METH_VARARGS,
-        "set a key to a value (internal C implementation)"
+        "_getset_request",
+        (PyCFunction)_MemcevClient__getset_request, METH_VARARGS,
+        "perform a memcached round trip (internal C implementation)"
     },
-
-    {
-        "_set",
-        (PyCFunction)_MemcevClient__set, METH_VARARGS,
-        "get a key's value (internal C implementation)"
-    },
-
     {NULL, NULL, 0, NULL}
 };
 
