@@ -4,15 +4,15 @@ A memcached client that internally uses libev
 
 Examples:
 
-    from memcev import Client
-    c = Client('localhost', 11211)
+    >>> from memcev import Client
+    >>> c = Client('localhost', 11211)
 
-    print c.get('doesntexist')
-    >>> None
+    >>> print c.get('doesntexist')
+    None
 
-    c.set('foo', 'bar')
-    print c.get('foo')
-    >>> bar
+    >>> c.set('foo', 'bar')
+    >>> print c.get('foo')
+    bar
 
 Known issues:
 
