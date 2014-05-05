@@ -249,7 +249,7 @@ class Client(_memcev._MemcevClient):
             return response
 
     @staticmethod
-    def _valid_key(key, valid_re = re.compile('^[a-zA-Z0-9]{,250}$')):
+    def _valid_key(key, valid_re = re.compile('^[a-zA-Z0-9]{1,250}$')):
         # Make sure the key is a valid memcached key
 
         # this isn't actually the valid set of memcached keys, in actuality
@@ -281,11 +281,11 @@ class Client(_memcev._MemcevClient):
     def set(self, key, value, expire=0, wait=True):
         "Set the given key with the given value into memcached"
 
-        if not self._valid_key(key):
+        if not self._valid_key(key) or len(key) > 250:
             raise ValueError("Invalid key: %r" % (key,))
 
-        if not isinstance(value, str) or len(value) > 250:
-            raise ValueError("values must be strings of len<=250")
+        if not isinstance(value, str) or len(value) > 1024*1024:
+            raise ValueError("values must be strings of len<=1mb")
 
         return self._simple_request('set', key, value, expire, wait=wait, tags='setted')
 
@@ -401,33 +401,3 @@ class Client(_memcev._MemcevClient):
             return True, ('setted',)
 
         return False, received_so_far
-
-def test(host='localhost', port=11211):
-    print 'clientfor %s:%d' % (host, port)
-    client = Client(host, port)
-    print 'client', client
-
-    try:
-
-        print 'getting empty'
-        getted = client.get('doesntexist')
-        print 'getted empty:', getted
-
-        print 'setting'
-        setted = client.set('foo', 'bar')
-        print 'setted', setted
-        print 'getting'
-        getted = client.get('foo')
-        print 'getted', getted
-
-    finally:
-
-        print 'stopping, closed:', client._closed
-        client.close()
-        print 'closed:', client._closed
-
-        del client
-        print 'delled'
-
-if __name__ == '__main__':
-    test()

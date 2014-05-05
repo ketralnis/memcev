@@ -13,4 +13,7 @@ setup (name = 'Memcev',
         author="David King",
         license="3-clause BSD <http://www.opensource.org/licenses/bsd-license.php>",
         url="https://github.com/ketralnis/memcev",
-        packages = ['memcev'])
+        packages = [
+            'memcev',
+            'memcev.tests',
+        ])

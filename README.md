@@ -1,13 +1,26 @@
-* nose/doctests
-* actual docs
+# memcev
 
-Known bugs:
+A memcached client that internally uses libev
+
+Examples:
+
+    from memcev import Client
+    c = Client('localhost', 11211)
+
+    print c.get('doesntexist')
+    >>> None
+
+    c.set('foo', 'bar')
+    print c.get('foo')
+    >>> bar
+
+Known issues:
 
 * issuing a stop() will cause anyone in other threads that are blocked on a
   response to sleep for forever. not a big deal since it's only really called
   on dealloc
   - could fix this by keeping track of all sleeping clients
-* we require 2.7 because we use the capsule API
+* we require Python 2.7 because we use the capsule API
 * we don't really handle EINTR, except where libev does it for us
 * we don't really handle timeouts at any point in the stack except connections
 * we don't really handle errors that require a reconnect. you just lose the

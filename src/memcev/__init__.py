@@ -1,1 +1,1 @@
-from .memcev import Client, test
+from .memcev import Client
