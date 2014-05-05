@@ -1,0 +1,4 @@
+include LICENSE MANIFEST.in setup.py
+include _memcevmodule.c _memcevmodule.h
+recursive-include memcev *.py
+recursive-include tests *.py

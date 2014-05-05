@@ -1,5 +1,4 @@
 * nose/doctests
-* make setup.py portable
 * actual docs
 
 Known bugs:
