@@ -1,14 +1,6 @@
-* move modules into sub namespace?
 * nose/doctests
 * make setup.py portable
-* change assertions to real exceptions
-* hunt down all of the TODOs, which are mostly error handing, and printfs
-* for some reason an exception on the request queue blocks the whole interpreter
-* probably need to do a full GC audit, esp. w.r.t. connections where it will go noticed the most
-* need to document where notify() is and should be be called
-* double check where we need docstrings and where we need comments instead
 * actual docs
-* rename private methods with a _
 
 Known bugs:
 
@@ -21,9 +13,10 @@ Known bugs:
 * we don't really handle timeouts at any point in the stack except connections
 * we don't really handle errors that require a reconnect. you just lose the
   connection. in fact, libev only seems to tell us about certain errors so there
-  may be others that go unreported until a socket read/write fails
+  may be others that go unreported until a socket read/write fails, which we
+  then also fail to handle :)
 * we aren't ready for Python 3
-* our set of valid memcached keys is restricted to alphanumerics
+* our set of valid memcached keys is more restrictive than memcached's
 * we don't work without EV_MULTIPLICITY
 * there's no exception hierarchy, you just get "Exception"
 * we make no effort to deal with broken or malicious servers that could cause us

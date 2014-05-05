@@ -60,7 +60,6 @@ static PyObject* _MemcevClient_start(_MemcevClient *self, PyObject *unused);
 static PyObject* _MemcevClient_stop(_MemcevClient *self, PyObject *unused);
 static PyObject* _MemcevClient__connect(_MemcevClient *self, PyObject *args);
 static PyObject* _MemcevClient__getset_request(_MemcevClient *self, PyObject *args);
-static PyObject* _MemcevClient__set(_MemcevClient *self, PyObject *args);
 
 static int _MemcevClient_init(_MemcevClient *self, PyObject *args, PyObject *kwds);
 static void _MemcevClient_dealloc(_MemcevClient* self);

@@ -50,7 +50,7 @@ static void notify_event_loop(struct ev_loop *loop, ev_async *watcher, int reven
     _MemcevClient *self = (_MemcevClient*)ev_userdata(loop);
     Py_INCREF(self);
 
-    PyObject* result = PyObject_CallMethod((PyObject*)self, "handle_work", NULL);
+    PyObject* result = PyObject_CallMethod((PyObject*)self, "_handle_work", NULL);
 
     if(result == NULL) {
         // if an exception occurred, there's not really much we can do since
@@ -78,7 +78,6 @@ static PyObject* _MemcevClient_notify(_MemcevClient *self, PyObject *cb) {
     // safe there is probably a mutex in there that I'd rather not block
     // Python with if we don't have to
     Py_BEGIN_ALLOW_THREADS;
-    // TODO do we have to check for an error here?
     ev_async_send(self->loop, &self->async_watcher);
     Py_END_ALLOW_THREADS;
 
@@ -86,19 +85,15 @@ static PyObject* _MemcevClient_notify(_MemcevClient *self, PyObject *cb) {
 }
 
 static void getset_request_cb(struct ev_loop* loop, ev_io *watcher, int revents) {
-    // TODO this comment isn't totally accurate
-    // to cut down on the number of callbacks, we implement a state machine here
-    // that handles each phase of the request. if this were a more complex
-    // protocol we'd also want to have a real parser but for memcached this is
-    // fine
-
-    // REMEMBER that we need to be able to check for write *and* read
-    // availability on the same loop because of event coallescing
+    // libev will call us here when we're ready to send the request, and again
+    // when we're ready to receive new data. we funnel that off to the parsing
+    // callbacks passed to us from Python repeatedly until he says he's done
 
     getset_request* req = (getset_request*)watcher->data;
 
     ev_connection* connection = NULL;
 
+    // intermediate results that we use
     PyObject* newacc = NULL;
     PyObject* parse_response = NULL;
     PyObject* done_bool = NULL;
@@ -474,7 +469,6 @@ static PyObject* _MemcevClient__connect(_MemcevClient *self, PyObject *args) {
     request->connection = connection;
     request->callback = cb;
 
-    // TODO can these error?
     ev_io_init(connect_watcher, connect_cb, connection->fd, EV_WRITE);
     ev_io_start(self->loop, connect_watcher);
 
