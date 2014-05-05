@@ -183,8 +183,10 @@ class Client(_memcev._MemcevClient):
         elif tag == 'set':
             key, value, expire = args
 
-            return self._set(connection, key, value,
-                             partial(self.notify_getset, queue, connection))
+            return self._getset_request(connection,
+                                        self._build_set_request(key, value, expire),
+                                        partial(self._parse_set_response, key), '',
+                                        partial(self.notify_getset, queue, connection))
 
     def send_request(self, *a):
         # validate and send a request to the event loop
@@ -277,13 +279,13 @@ class Client(_memcev._MemcevClient):
 
         return response
 
-    def set(self, key, value, wait=True):
+    def set(self, key, value, expire=0, wait=True):
         "Set the given key with the given value into memcached"
         assert self.valid_key(key)
         assert isinstance(value, str)
         assert len(value) <= 250
 
-        return self.simple_request('set', key, value, wait=wait, tags='setted')
+        return self.simple_request('set', key, value, expire, wait=wait, tags='setted')
 
     def get(self, key):
         "Get the given key from memcached and return it, or None if it's not present"
@@ -315,6 +317,18 @@ class Client(_memcev._MemcevClient):
 
         self.notify()
 
+    def _check_server_errors(self, body):
+        if body == 'ERROR\r\n':
+            raise Exception('Unknown error from server')
+
+        m = re.match('CLIENT_ERROR (.*)\r\n', body)
+        if m:
+            raise Exception("Client error: %s" % m.group(1))
+
+        m = re.match('SERVER_ERROR (.*)\r\n', body)
+        if m:
+            raise Exception("Server error: %s" % m.group(1))
+
     def _build_get_request(self, key):
         assert self.valid_key(key)
         request = 'get %s\r\n' % (key,)
@@ -330,20 +344,13 @@ class Client(_memcev._MemcevClient):
         # this works for our limited use case but if we add get_multi or
         # anything more complicated we'll have to revisit
 
-        # acc starts as None
-        acc = acc or ''
+        # acc starts as ''
         received_so_far = acc + newdata
 
-        if received_so_far == 'ERROR\r\n':
-            return True, ('error', 'Unknown error from server')
-
-        m = re.match('CLIENT_ERROR (.*)\r\n', received_so_far)
-        if m:
-            return True, ('error', "Client error: %s" % m.group(1))
-
-        m = re.match('SERVER_ERROR (.*)\r\n', received_so_far)
-        if m:
-            return True, ('error', "Server error: %s" % m.group(1))
+        try:
+            self._check_server_errors(received_so_far)
+        except Exception as e:
+            return True, ('error', e)
 
         # these will need to be changed if we support get_multi in the future
 
@@ -367,6 +374,25 @@ class Client(_memcev._MemcevClient):
 
         return True, ('getted', rkey, payload)
 
+    def _build_set_request(self, key, value, expiration):
+        assert self.valid_key(key)
+
+        return "set %s 0 %d %d\r\n%s\r\n" % (key, expiration, len(value), value)
+
+    def _parse_set_response(self, key, acc, newdata):
+        received_so_far = acc + newdata
+
+        try:
+            self._check_server_errors(received_so_far)
+        except Exception as e:
+            return True, ('error', e)
+
+        # the only valid response
+        if received_so_far == 'STORED\r\n':
+            return True, ('setted',)
+
+        return False, received_so_far
+
 def test(host='localhost', port=11211):
     print 'clientfor %s:%d' % (host, port)
     client = Client(host, port)
@@ -377,7 +403,6 @@ def test(host='localhost', port=11211):
         print 'getting empty'
         getted = client.get('doesntexist')
         print 'getted empty:', getted
-        return
 
         print 'setting'
         setted = client.set('foo', 'bar')

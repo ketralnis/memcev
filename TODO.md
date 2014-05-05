@@ -26,3 +26,5 @@ Known bugs:
 * our set of valid memcached keys is restricted to alphanumerics
 * we don't work without EV_MULTIPLICITY
 * there's no exception hierarchy, you just get "Exception"
+* we make no effort to deal with broken or malicious servers that could cause us
+  to block forever or use up all of our memory with long, invalid responses
