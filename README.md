@@ -16,6 +16,10 @@ Examples:
 
 Known issues:
 
+* single server, no distribution
+* string values only
+* no compression
+* only get and set. No get_multi/set_multi etc
 * issuing a stop() will cause anyone in other threads that are blocked on a
   response to sleep for forever. not a big deal since it's only really called
   on dealloc
